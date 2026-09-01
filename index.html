@@ -30,6 +30,20 @@
         .bar-omar { background: linear-gradient(90deg, #9C27B0, #BA68C8); }
         .bar-group { background: linear-gradient(90deg, #37474F, #546E7A); border-radius: 0; height: 8px; }
         .bar-project { background: linear-gradient(90deg, #00838F, #00ACC1); border-radius: 0; height: 8px; }
+        /* Progreso dentro de la barra */
+        .bar { overflow: hidden; }
+        .bar-progress { position: absolute; top: 0; left: 0; bottom: 0; background: rgba(255,255,255,0.85); }
+        .bar-progress-track { background: rgba(0,0,0,0.35) !important; }
+        .pct-label { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); font-size: 6.5px; color: #fff; font-weight: bold; text-shadow: 0 0 3px #000; z-index: 3; white-space: nowrap; }
+
+        input.pct-input { width: 48px; background: #0a1628; border: 1px solid #00d4ff55; color: #00d4ff; border-radius: 4px; text-align: center; font-size: 1em; padding: 2px; font-family: inherit; }
+        input.pct-input:focus { outline: none; border-color: #00d4ff; background: #0f2a4a; }
+        .pct-cell-group { color: #ffd93d; font-weight: bold; text-align: center; }
+        .progress-bar-wrap { background: #0a1628; border-radius: 10px; height: 22px; overflow: hidden; position: relative; border: 1px solid #333; margin-top: 6px; }
+        .progress-bar-fill { height: 100%; background: linear-gradient(90deg, #00838F, #00d4ff); transition: width 0.4s ease; }
+        .progress-bar-text { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); font-size: 0.8em; font-weight: bold; color: #fff; text-shadow: 0 0 4px #000; }
+        .btn-reset { display: block; margin: 10px auto; padding: 6px 16px; background: #ff525233; color: #ff5252; border: 1px solid #ff5252; border-radius: 6px; font-size: 0.8em; cursor: pointer; }
+        .btn-reset:hover { background: #ff525255; }
         
         .risk-true { color: #ff5252; font-weight: bold; }
         .risk-false { color: #666; }
@@ -142,8 +156,27 @@
     </div>
 
     <div class="summary-cards" id="summaryCards"></div>
+
+    <div class="project-info" style="margin-top:15px">
+        <div style="grid-column: 1 / -1;">
+            <div class="label" style="font-size:0.95em;color:#00d4ff;font-weight:bold;">📈 Avance Consolidado del Proyecto</div>
+            <div class="progress-bar-wrap" style="height:28px;margin-top:10px;">
+                <div class="progress-bar-fill" id="projectProgressFill" style="width:0%"></div>
+                <div class="progress-bar-text" id="projectProgressText">0%</div>
+            </div>
+            <div style="color:#aaa;font-size:0.75em;margin-top:6px;" id="projectProgressDetail"></div>
+        </div>
+    </div>
+    <button class="btn-reset" onclick="resetProgress()">🔄 Reiniciar todos los avances a 0%</button>
     
     <h2>Diagrama de Gantt</h2>
+    <p style="color:#aaa;font-size:0.8em;margin-bottom:10px;">
+        💡 Edita el <b style="color:#00d4ff">% de Avance</b> de cada tarea y se guarda automáticamente en este navegador. 
+        El avance de módulos y del proyecto se recalcula ponderado por días de esfuerzo.
+        Alertas: <span style="color:#4CAF50">🟢 En tiempo</span> · 
+        <span style="color:#FF9800">⚠️ Retraso</span> (avance real por debajo de lo esperado a hoy) · 
+        <span style="color:#ff1744">🔴 Vencida</span> (pasó la fecha fin sin llegar al 100%).
+    </p>
     <div class="gantt-container">
         <table class="gantt" id="ganttTable"></table>
     </div>
@@ -203,6 +236,89 @@
         { id: "19", name: "Ejecución de Pruebas internas de desarrollo", estado: "No se ha iniciado", dev: "Omar Alejandro Ochoa Guillen", days: 5, start: "2026-09-28", end: "2026-10-02", pct: "0%", preds: "2, 11, 14, 18, 21, 24", risk: "TRUE", type: "task" },
     ];
 
+    // ===== Gestión de % de avance (persistente en localStorage) =====
+    const STORAGE_KEY = 'siu_hubspot_avances';
+
+    function loadProgress() {
+        try {
+            const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}');
+            tasks.forEach(t => {
+                if (t.type === 'task' && saved[t.id] !== undefined) {
+                    t.progress = saved[t.id];
+                } else if (t.type === 'task') {
+                    t.progress = 0;
+                }
+            });
+        } catch (e) {
+            tasks.forEach(t => { if (t.type === 'task') t.progress = 0; });
+        }
+    }
+
+    function saveProgress() {
+        const data = {};
+        tasks.forEach(t => { if (t.type === 'task') data[t.id] = t.progress || 0; });
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+    }
+
+    function setTaskProgress(id, value) {
+        let v = parseInt(value, 10);
+        if (isNaN(v)) v = 0;
+        v = Math.max(0, Math.min(100, v));
+        const task = tasks.find(t => t.id === id && t.type === 'task');
+        if (task) {
+            task.progress = v;
+            saveProgress();
+            refreshAll();
+        }
+    }
+
+    function resetProgress() {
+        if (confirm('¿Reiniciar todos los avances a 0%?')) {
+            tasks.forEach(t => { if (t.type === 'task') t.progress = 0; });
+            saveProgress();
+            refreshAll();
+        }
+    }
+
+    // Avance ponderado de un grupo (por días de sus tareas)
+    function getGroupProgress(groupIndex) {
+        const groupTasks = [];
+        for (let i = groupIndex + 1; i < tasks.length; i++) {
+            if (tasks[i].type === 'group' || tasks[i].type === 'project') break;
+            if (tasks[i].type === 'task') groupTasks.push(tasks[i]);
+        }
+        if (groupTasks.length === 0) return 0;
+        const totalDays = groupTasks.reduce((s, t) => s + t.days, 0);
+        const weighted = groupTasks.reduce((s, t) => s + t.days * (t.progress || 0), 0);
+        return totalDays > 0 ? Math.round(weighted / totalDays) : 0;
+    }
+
+    // Avance total del proyecto (ponderado por días de todas las tareas)
+    function getProjectProgress() {
+        const activeTasks = tasks.filter(t => t.type === 'task');
+        const totalDays = activeTasks.reduce((s, t) => s + t.days, 0);
+        const weighted = activeTasks.reduce((s, t) => s + t.days * (t.progress || 0), 0);
+        return totalDays > 0 ? Math.round(weighted / totalDays) : 0;
+    }
+
+    function refreshAll() {
+        renderGantt();
+        renderSummary();
+        renderProjectProgress();
+    }
+
+    function renderProjectProgress() {
+        const pct = getProjectProgress();
+        document.getElementById('projectProgressFill').style.width = pct + '%';
+        document.getElementById('projectProgressText').textContent = pct + '%';
+        const activeTasks = tasks.filter(t => t.type === 'task');
+        const completed = activeTasks.filter(t => (t.progress || 0) === 100).length;
+        const inProgress = activeTasks.filter(t => (t.progress || 0) > 0 && (t.progress || 0) < 100).length;
+        const notStarted = activeTasks.filter(t => (t.progress || 0) === 0).length;
+        document.getElementById('projectProgressDetail').innerHTML = 
+            `✅ Completadas: <b style="color:#4CAF50">${completed}</b> &nbsp;|&nbsp; 🔵 En progreso: <b style="color:#00d4ff">${inProgress}</b> &nbsp;|&nbsp; ⚪ Sin iniciar: <b style="color:#aaa">${notStarted}</b> &nbsp;|&nbsp; Avance ponderado por días de esfuerzo.`;
+    }
+
     // Rango del proyecto
     const projectStart = new Date(2026, 7, 26);
     const projectEnd = new Date(2026, 9, 2);
@@ -256,11 +372,64 @@
         return 'bar-group';
     }
 
+    // "Hoy" para calcular retrasos. Cambia esta fecha para simular. Por defecto usa la fecha actual del sistema.
+    const TODAY = new Date();
+
+    // Avance esperado de una tarea a la fecha de hoy (0-100)
+    function getExpectedProgress(task) {
+        const start = new Date(task.start + "T00:00:00");
+        const end = new Date(task.end + "T23:59:59");
+        if (TODAY < start) return 0;
+        if (TODAY > end) return 100;
+        // Días hábiles transcurridos vs. totales
+        const totalBiz = countBusinessDays(start, end);
+        const elapsedBiz = countBusinessDays(start, TODAY);
+        return totalBiz > 0 ? Math.round(Math.min(100, (elapsedBiz / totalBiz) * 100)) : 0;
+    }
+
+    function countBusinessDays(start, end) {
+        let count = 0;
+        let cur = new Date(start);
+        cur.setHours(0,0,0,0);
+        const e = new Date(end);
+        e.setHours(0,0,0,0);
+        while (cur <= e) {
+            const dow = cur.getDay();
+            if (dow !== 0 && dow !== 6) count++;
+            cur.setDate(cur.getDate() + 1);
+        }
+        return count;
+    }
+
+    // Estado de retraso: 'ontrack' | 'delayed' | 'done' | 'notstarted' | 'critical-delay'
+    function getDelayStatus(task) {
+        const prog = task.progress || 0;
+        const expected = getExpectedProgress(task);
+        const end = new Date(task.end + "T23:59:59");
+        if (prog >= 100) return 'done';
+        // Vencida y sin completar
+        if (TODAY > end && prog < 100) return 'critical-delay';
+        if (expected === 0) return 'notstarted';
+        // Retraso si el avance real está por debajo del esperado con margen del 10%
+        if (prog < expected - 10) return 'delayed';
+        return 'ontrack';
+    }
+
+    function delayBadge(status) {
+        switch (status) {
+            case 'critical-delay': return '<span title="Vencida sin completar" style="color:#ff1744;font-weight:bold">🔴 VENCIDA</span>';
+            case 'delayed': return '<span title="Por debajo del avance esperado" style="color:#FF9800;font-weight:bold">⚠️ RETRASO</span>';
+            case 'done': return '<span title="Completada" style="color:#4CAF50;font-weight:bold">✅ OK</span>';
+            case 'ontrack': return '<span title="En tiempo" style="color:#4CAF50">🟢 En tiempo</span>';
+            default: return '<span style="color:#666">— Sin iniciar</span>';
+        }
+    }
+
     // Renderizar Gantt
     function renderGantt() {
         const table = document.getElementById('ganttTable');
         
-        let header = '<thead><tr><th>Riesgo</th><th style="min-width:280px">Nombre de la tarea</th><th>Estado</th><th style="min-width:120px">Asignado a</th><th>Dur.</th><th>Inicio</th><th>Fin</th><th>%</th><th>Pred.</th>';
+        let header = '<thead><tr><th>Riesgo</th><th style="min-width:260px">Nombre de la tarea</th><th style="min-width:95px">Alerta</th><th style="min-width:110px">Asignado a</th><th>Dur.</th><th>Inicio</th><th>Fin</th><th style="min-width:60px">% Avance</th><th>Pred.</th>';
         allDays.forEach(d => {
             const isMonday = d.getDay() === 1;
             const border = isMonday ? 'border-left:2px solid #444;' : '';
@@ -269,23 +438,50 @@
         header += '</tr></thead>';
         
         let body = '<tbody>';
-        tasks.forEach(task => {
+        tasks.forEach((task, taskIdx) => {
             const startIdx = getDayIndex(task.start);
             const endIdx = getDayIndex(task.end);
             const rowClass = task.type === 'project' ? 'row-project' : (task.type === 'group' ? 'row-group' : '');
             const barClass = task.type === 'project' ? 'bar-project' : (task.type === 'group' ? 'bar-group' : getDevClass(task.dev));
             const indent = task.type === 'task' ? '&nbsp;&nbsp;&nbsp;&nbsp;' : (task.type === 'group' ? '&nbsp;&nbsp;' : '');
             const riskIcon = task.risk === 'TRUE' ? '<span class="risk-true">🚩</span>' : '<span class="risk-false">—</span>';
+
+            // Progreso y estado de retraso
+            let progress = 0;
+            let delayStatus = '';
+            if (task.type === 'task') {
+                progress = task.progress || 0;
+                delayStatus = getDelayStatus(task);
+            } else if (task.type === 'group') {
+                progress = getGroupProgress(taskIdx);
+            } else if (task.type === 'project') {
+                progress = getProjectProgress();
+            }
+
+            // Fila resaltada si está retrasada/vencida
+            let rowStyle = '';
+            if (delayStatus === 'critical-delay') rowStyle = 'style="background:#ff174415 !important"';
+            else if (delayStatus === 'delayed') rowStyle = 'style="background:#FF980012 !important"';
             
-            body += `<tr class="${rowClass}">`;
+            body += `<tr class="${rowClass}" ${rowStyle}>`;
             body += `<td class="task-info" style="text-align:center">${riskIcon}</td>`;
             body += `<td class="task-info">${indent}${task.name}</td>`;
-            body += `<td class="task-info" style="font-size:0.7em">${task.estado}</td>`;
+            // Columna Alerta
+            if (task.type === 'task') {
+                body += `<td class="task-info" style="font-size:0.68em;text-align:center">${delayBadge(delayStatus)}</td>`;
+            } else {
+                body += `<td class="task-info" style="text-align:center;color:#666">—</td>`;
+            }
             body += `<td class="task-info">${task.dev || ''}</td>`;
             body += `<td class="task-info" style="text-align:center">${task.days}d</td>`;
             body += `<td class="task-info">${formatDate(task.start)}</td>`;
             body += `<td class="task-info">${formatDate(task.end)}</td>`;
-            body += `<td class="task-info" style="text-align:center">${task.pct}</td>`;
+            // Columna % Avance: editable para tareas, calculada para grupos/proyecto
+            if (task.type === 'task') {
+                body += `<td class="task-info" style="text-align:center"><input type="number" min="0" max="100" step="5" value="${progress}" class="pct-input" onchange="setTaskProgress('${task.id}', this.value)" />%</td>`;
+            } else {
+                body += `<td class="task-info pct-cell-group">${progress}%</td>`;
+            }
             body += `<td class="task-info">${task.preds}</td>`;
             
             allDays.forEach((d, i) => {
@@ -293,7 +489,8 @@
                 const border = isMonday ? 'border-left:2px solid #333;' : '';
                 if (i >= startIdx && i <= endIdx) {
                     const color = task.type === 'task' ? getDevColor(task.dev) : '#546E7A';
-                    body += `<td class="day-cell" style="${border}background:${color}15"><div class="bar ${barClass}"></div></td>`;
+                    const trackClass = progress > 0 ? 'bar-progress-track' : '';
+                    body += `<td class="day-cell" style="${border}background:${color}15"><div class="bar ${barClass} ${trackClass}"></div></td>`;
                 } else {
                     body += `<td class="day-cell" style="${border}"></td>`;
                 }
@@ -303,6 +500,53 @@
         body += '</tbody>';
         
         table.innerHTML = header + body;
+
+        // Dibujar el relleno de progreso sobre el tramo completo de cada barra
+        drawProgressOverlays();
+    }
+
+    // Dibuja una barra de progreso continua sobre el rango de días de cada tarea
+    function drawProgressOverlays() {
+        const table = document.getElementById('ganttTable');
+        const rows = table.querySelectorAll('tbody tr');
+        tasks.forEach((task, taskIdx) => {
+            const row = rows[taskIdx];
+            if (!row) return;
+            let progress = 0;
+            if (task.type === 'task') progress = task.progress || 0;
+            else if (task.type === 'group') progress = getGroupProgress(taskIdx);
+            else if (task.type === 'project') progress = getProjectProgress();
+            if (progress <= 0) return;
+
+            const startIdx = getDayIndex(task.start);
+            const endIdx = getDayIndex(task.end);
+            const cells = row.querySelectorAll('td.day-cell');
+            const total = endIdx - startIdx + 1;
+            const filledCount = total * (progress / 100);
+            for (let k = 0; k < total; k++) {
+                const cell = cells[startIdx + k];
+                if (!cell) continue;
+                const bar = cell.querySelector('.bar');
+                if (!bar) continue;
+                let fillPct = 0;
+                if (k + 1 <= filledCount) fillPct = 100;
+                else if (k < filledCount) fillPct = (filledCount - k) * 100;
+                if (fillPct > 0) {
+                    const ov = document.createElement('div');
+                    ov.className = 'bar-progress';
+                    ov.style.width = fillPct + '%';
+                    bar.appendChild(ov);
+                }
+            }
+            // Etiqueta del % en la celda central del rango
+            const midCell = cells[startIdx + Math.floor(total / 2)];
+            if (midCell) {
+                const lbl = document.createElement('div');
+                lbl.className = 'pct-label';
+                lbl.textContent = progress + '%';
+                midCell.appendChild(lbl);
+            }
+        });
     }
 
     function formatDate(dateStr) {
@@ -318,13 +562,18 @@
         const devs = [...new Set(activeTasks.map(t => t.dev).filter(Boolean))];
         const atRisk = activeTasks.filter(t => t.risk === 'TRUE').length;
         
+        // Conteo de retrasos
+        const delayed = activeTasks.filter(t => getDelayStatus(t) === 'delayed').length;
+        const overdue = activeTasks.filter(t => getDelayStatus(t) === 'critical-delay').length;
+        const projPct = getProjectProgress();
+
         container.innerHTML = `
-            <div class="card"><h3>28</h3><p>Días total proyecto</p></div>
-            <div class="card"><h3>${allDays.length}</h3><p>Días hábiles</p></div>
+            <div class="card"><h3>${projPct}%</h3><p>Avance total</p></div>
             <div class="card"><h3>${activeTasks.length}</h3><p>Actividades</p></div>
             <div class="card"><h3>${devs.length}</h3><p>Desarrolladores</p></div>
             <div class="card"><h3>${totalTaskDays}d</h3><p>Días-persona</p></div>
-            <div class="card"><h3 style="color:#ff5252">${atRisk}</h3><p>En riesgo 🚩</p></div>
+            <div class="card"><h3 style="color:#FF9800">${delayed}</h3><p>Con retraso ⚠️</p></div>
+            <div class="card"><h3 style="color:#ff1744">${overdue}</h3><p>Vencidas 🔴</p></div>
         `;
     }
 
@@ -434,6 +683,7 @@
         `).join('');
     }
 
+    loadProgress();
     renderHitos();
     renderCriticalPath();
     renderSwimlane();
@@ -441,6 +691,7 @@
     renderSemaforo();
     renderGantt();
     renderSummary();
+    renderProjectProgress();
     renderCharts();
 
     // Ruta Crítica
