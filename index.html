@@ -6,6 +6,7 @@
     <title>Cronograma Desarrollo SIU - UMV</title>
     <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body { font-family: 'Segoe UI', sans-serif; background: #1a1a2e; color: #eee; padding: 20px; }
@@ -169,10 +170,27 @@
             <div style="color:#aaa;font-size:0.75em;margin-top:6px;" id="projectProgressDetail"></div>
         </div>
     </div>
-    <div style="text-align:center;margin:10px 0;">
+    <div style="text-align:center;margin:10px 0;display:flex;gap:10px;justify-content:center;align-items:center;flex-wrap:wrap;">
         <span id="syncStatus" style="font-size:0.8em;padding:5px 14px;border-radius:20px;background:#16213e;border:1px solid #333;color:#aaa;">🔄 Conectando a la nube...</span>
+        <span id="authStatus" style="font-size:0.8em;padding:5px 14px;border-radius:20px;background:#16213e;border:1px solid #333;color:#aaa;">👤 Solo lectura</span>
+        <button id="btnLogin" onclick="openLoginModal()" style="font-size:0.8em;padding:5px 14px;border-radius:20px;background:#00d4ff;color:#1a1a2e;border:none;font-weight:bold;cursor:pointer;">🔓 Iniciar sesión para editar</button>
+        <button id="btnLogout" onclick="doLogout()" style="display:none;font-size:0.8em;padding:5px 14px;border-radius:20px;background:#ff525233;color:#ff5252;border:1px solid #ff5252;cursor:pointer;">Cerrar sesión</button>
     </div>
     <button class="btn-reset" onclick="resetProgress()">🔄 Reiniciar todos los avances a 0%</button>
+
+    <!-- Modal de login -->
+    <div id="loginModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:1000;align-items:center;justify-content:center;">
+        <div style="background:#16213e;border:1px solid #00d4ff;border-radius:10px;padding:25px;width:320px;max-width:90%;">
+            <h3 style="color:#00d4ff;margin-bottom:15px;font-size:1.1em;">🔐 Iniciar sesión para editar</h3>
+            <input id="loginEmail" type="email" placeholder="Correo" style="width:100%;padding:10px;margin-bottom:10px;background:#0a1628;border:1px solid #333;border-radius:6px;color:#fff;" />
+            <input id="loginPass" type="password" placeholder="Contraseña" style="width:100%;padding:10px;margin-bottom:10px;background:#0a1628;border:1px solid #333;border-radius:6px;color:#fff;" onkeydown="if(event.key==='Enter')doLogin()" />
+            <div id="loginError" style="color:#ff5252;font-size:0.8em;margin-bottom:10px;min-height:16px;"></div>
+            <div style="display:flex;gap:10px;">
+                <button onclick="doLogin()" style="flex:1;padding:10px;background:#00d4ff;color:#1a1a2e;border:none;border-radius:6px;font-weight:bold;cursor:pointer;">Entrar</button>
+                <button onclick="closeLoginModal()" style="flex:1;padding:10px;background:#333;color:#ccc;border:none;border-radius:6px;cursor:pointer;">Cancelar</button>
+            </div>
+        </div>
+    </div>
     
     <h2>Diagrama de Gantt</h2>
     <p style="color:#aaa;font-size:0.8em;margin-bottom:10px;">
@@ -265,10 +283,21 @@
         }
     }
 
+    let auth = null;
+    let isEditor = false;
+
     function initFirebase() {
         try {
             firebase.initializeApp(firebaseConfig);
             db = firebase.database();
+            auth = firebase.auth();
+
+            // Estado de sesión: define si el usuario puede editar
+            auth.onAuthStateChanged((user) => {
+                isEditor = !!user;
+                updateAuthUI(user);
+                refreshAll();
+            });
 
             // Escucha en tiempo real: cualquier cambio en la nube se refleja al instante
             db.ref(DB_PATH).on('value', (snapshot) => {
@@ -314,6 +343,57 @@
         }
     }
 
+    // ===== Autenticación (control de edición) =====
+    function updateAuthUI(user) {
+        const authStatus = document.getElementById('authStatus');
+        const btnLogin = document.getElementById('btnLogin');
+        const btnLogout = document.getElementById('btnLogout');
+        const btnReset = document.querySelector('.btn-reset');
+        if (user) {
+            authStatus.textContent = '✏️ Editor: ' + (user.email || 'autenticado');
+            authStatus.style.color = '#4CAF50';
+            authStatus.style.borderColor = '#4CAF50';
+            btnLogin.style.display = 'none';
+            btnLogout.style.display = 'inline-block';
+            if (btnReset) btnReset.style.display = 'block';
+        } else {
+            authStatus.textContent = '👤 Solo lectura';
+            authStatus.style.color = '#aaa';
+            authStatus.style.borderColor = '#333';
+            btnLogin.style.display = 'inline-block';
+            btnLogout.style.display = 'none';
+            if (btnReset) btnReset.style.display = 'none';
+        }
+    }
+
+    function openLoginModal() {
+        document.getElementById('loginModal').style.display = 'flex';
+        document.getElementById('loginError').textContent = '';
+        document.getElementById('loginEmail').focus();
+    }
+    function closeLoginModal() {
+        document.getElementById('loginModal').style.display = 'none';
+    }
+    function doLogin() {
+        const email = document.getElementById('loginEmail').value.trim();
+        const pass = document.getElementById('loginPass').value;
+        const errEl = document.getElementById('loginError');
+        if (!email || !pass) { errEl.textContent = 'Ingresa correo y contraseña.'; return; }
+        errEl.textContent = 'Verificando...';
+        auth.signInWithEmailAndPassword(email, pass)
+            .then(() => {
+                closeLoginModal();
+                document.getElementById('loginPass').value = '';
+            })
+            .catch((e) => {
+                errEl.textContent = 'Credenciales incorrectas.';
+                console.error(e);
+            });
+    }
+    function doLogout() {
+        if (auth) auth.signOut();
+    }
+
     // Respaldo local por si falla Firebase
     function loadLocalFallback() {
         try {
@@ -332,6 +412,11 @@
     }
 
     function setTaskProgress(id, value) {
+        if (!isEditor) {
+            alert('Debes iniciar sesión para editar los avances.');
+            refreshAll();
+            return;
+        }
         let v = parseInt(value, 10);
         if (isNaN(v)) v = 0;
         v = Math.max(0, Math.min(100, v));
@@ -355,6 +440,7 @@
     }
 
     function resetProgress() {
+        if (!isEditor) { alert('Debes iniciar sesión para editar los avances.'); return; }
         if (confirm('¿Reiniciar todos los avances a 0% para TODO el equipo?')) {
             const data = {};
             tasks.forEach(t => { if (t.type === 'task') data[t.id] = 0; });
@@ -566,7 +652,9 @@
             body += `<td class="task-info">${formatDate(task.end)}</td>`;
             // Columna % Avance: editable para tareas, calculada para grupos/proyecto
             if (task.type === 'task') {
-                body += `<td class="task-info" style="text-align:center"><input type="number" min="0" max="100" step="5" value="${progress}" class="pct-input" onchange="setTaskProgress('${task.id}', this.value)" />%</td>`;
+                const disabledAttr = isEditor ? '' : 'disabled title="Inicia sesión para editar"';
+                const inputStyle = isEditor ? '' : 'style="opacity:0.55;cursor:not-allowed"';
+                body += `<td class="task-info" style="text-align:center"><input type="number" min="0" max="100" step="5" value="${progress}" class="pct-input" ${disabledAttr} ${inputStyle} onchange="setTaskProgress('${task.id}', this.value)" />%</td>`;
             } else {
                 body += `<td class="task-info pct-cell-group">${progress}%</td>`;
             }
