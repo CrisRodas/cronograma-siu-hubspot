@@ -4,6 +4,8 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Cronograma Desarrollo SIU - UMV</title>
+    <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js"></script>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body { font-family: 'Segoe UI', sans-serif; background: #1a1a2e; color: #eee; padding: 20px; }
@@ -167,11 +169,14 @@
             <div style="color:#aaa;font-size:0.75em;margin-top:6px;" id="projectProgressDetail"></div>
         </div>
     </div>
+    <div style="text-align:center;margin:10px 0;">
+        <span id="syncStatus" style="font-size:0.8em;padding:5px 14px;border-radius:20px;background:#16213e;border:1px solid #333;color:#aaa;">🔄 Conectando a la nube...</span>
+    </div>
     <button class="btn-reset" onclick="resetProgress()">🔄 Reiniciar todos los avances a 0%</button>
     
     <h2>Diagrama de Gantt</h2>
     <p style="color:#aaa;font-size:0.8em;margin-bottom:10px;">
-        💡 Edita el <b style="color:#00d4ff">% de Avance</b> de cada tarea y se guarda automáticamente en este navegador. 
+        💡 Edita el <b style="color:#00d4ff">% de Avance</b> de cada tarea y se guarda <b style="color:#4CAF50">en la nube en tiempo real</b> para todo el equipo. 
         El avance de módulos y del proyecto se recalcula ponderado por días de esfuerzo.
         Alertas: <span style="color:#4CAF50">🟢 En tiempo</span> · 
         <span style="color:#FF9800">⚠️ Retraso</span> (avance real por debajo de lo esperado a hoy) · 
@@ -236,28 +241,82 @@
         { id: "19", name: "Ejecución de Pruebas internas de desarrollo", estado: "No se ha iniciado", dev: "Omar Alejandro Ochoa Guillen", days: 5, start: "2026-09-28", end: "2026-10-02", pct: "0%", preds: "2, 11, 14, 18, 21, 24", risk: "TRUE", type: "task" },
     ];
 
-    // ===== Gestión de % de avance (persistente en localStorage) =====
-    const STORAGE_KEY = 'siu_hubspot_avances';
+    // ===== Gestión de % de avance (compartido en la nube con Firebase) =====
+    const firebaseConfig = {
+        apiKey: "AIzaSyD4mXhuzJ7efKdykJLqBOVbA83gMEr9Hg0",
+        authDomain: "siu-hubspot.firebaseapp.com",
+        databaseURL: "https://siu-hubspot-default-rtdb.firebaseio.com",
+        projectId: "siu-hubspot",
+        storageBucket: "siu-hubspot.firebasestorage.app",
+        messagingSenderId: "938987493270",
+        appId: "1:938987493270:web:6db909617a56d15c5cafb7"
+    };
 
-    function loadProgress() {
+    let db = null;
+    const DB_PATH = 'avances';
+
+    function setSyncStatus(text, color) {
+        const el = document.getElementById('syncStatus');
+        if (el) {
+            el.textContent = text;
+            el.style.color = color || '#aaa';
+            el.style.borderColor = color || '#333';
+        }
+    }
+
+    function initFirebase() {
         try {
-            const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}');
-            tasks.forEach(t => {
-                if (t.type === 'task' && saved[t.id] !== undefined) {
-                    t.progress = saved[t.id];
-                } else if (t.type === 'task') {
-                    t.progress = 0;
+            firebase.initializeApp(firebaseConfig);
+            db = firebase.database();
+
+            // Escucha en tiempo real: cualquier cambio en la nube se refleja al instante
+            db.ref(DB_PATH).on('value', (snapshot) => {
+                const data = snapshot.val() || {};
+                tasks.forEach(t => {
+                    if (t.type === 'task') {
+                        t.progress = (data[t.id] !== undefined && data[t.id] !== null) ? data[t.id] : 0;
+                    }
+                });
+                refreshAll();
+                setSyncStatus('🟢 Sincronizado en la nube (en vivo)', '#4CAF50');
+            }, (err) => {
+                console.error('Firebase read error:', err);
+                setSyncStatus('🔴 Error de conexión - usando datos locales', '#ff5252');
+                loadLocalFallback();
+                refreshAll();
+            });
+
+            // Detectar estado de conexión
+            firebase.database().ref('.info/connected').on('value', (snap) => {
+                if (snap.val() === true) {
+                    setSyncStatus('🟢 Sincronizado en la nube (en vivo)', '#4CAF50');
+                } else {
+                    setSyncStatus('🟡 Sin conexión - reconectando...', '#FF9800');
                 }
+            });
+        } catch (e) {
+            console.error('Firebase init error:', e);
+            setSyncStatus('🔴 No se pudo conectar a la nube - datos locales', '#ff5252');
+            loadLocalFallback();
+            refreshAll();
+        }
+    }
+
+    // Respaldo local por si falla Firebase
+    function loadLocalFallback() {
+        try {
+            const saved = JSON.parse(localStorage.getItem('siu_hubspot_avances') || '{}');
+            tasks.forEach(t => {
+                if (t.type === 'task') t.progress = saved[t.id] || 0;
             });
         } catch (e) {
             tasks.forEach(t => { if (t.type === 'task') t.progress = 0; });
         }
     }
 
-    function saveProgress() {
-        const data = {};
-        tasks.forEach(t => { if (t.type === 'task') data[t.id] = t.progress || 0; });
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+    function loadProgress() {
+        // Inicializa a 0 mientras carga Firebase
+        tasks.forEach(t => { if (t.type === 'task') t.progress = 0; });
     }
 
     function setTaskProgress(id, value) {
@@ -267,16 +326,33 @@
         const task = tasks.find(t => t.id === id && t.type === 'task');
         if (task) {
             task.progress = v;
-            saveProgress();
-            refreshAll();
+            // Guarda respaldo local siempre
+            const local = {};
+            tasks.forEach(t => { if (t.type === 'task') local[t.id] = t.progress || 0; });
+            localStorage.setItem('siu_hubspot_avances', JSON.stringify(local));
+            // Guarda en la nube (esto dispara el 'value' listener para todos)
+            if (db) {
+                db.ref(DB_PATH + '/' + id).set(v).catch(err => {
+                    console.error('Error guardando:', err);
+                    setSyncStatus('🔴 Error al guardar en la nube', '#ff5252');
+                });
+            } else {
+                refreshAll();
+            }
         }
     }
 
     function resetProgress() {
-        if (confirm('¿Reiniciar todos los avances a 0%?')) {
-            tasks.forEach(t => { if (t.type === 'task') t.progress = 0; });
-            saveProgress();
-            refreshAll();
+        if (confirm('¿Reiniciar todos los avances a 0% para TODO el equipo?')) {
+            const data = {};
+            tasks.forEach(t => { if (t.type === 'task') data[t.id] = 0; });
+            localStorage.setItem('siu_hubspot_avances', JSON.stringify(data));
+            if (db) {
+                db.ref(DB_PATH).set(data).catch(err => console.error(err));
+            } else {
+                tasks.forEach(t => { if (t.type === 'task') t.progress = 0; });
+                refreshAll();
+            }
         }
     }
 
@@ -693,6 +769,9 @@
     renderSummary();
     renderProjectProgress();
     renderCharts();
+
+    // Conectar a Firebase para sincronización en vivo entre todos los usuarios
+    initFirebase();
 
     // Ruta Crítica
     function renderCriticalPath() {
