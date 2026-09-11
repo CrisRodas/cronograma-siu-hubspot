@@ -183,7 +183,7 @@
         <span style="color:#ff1744">🔴 Vencida</span> (pasó la fecha fin sin llegar al 100%).
     </p>
     <div class="gantt-container">
-        <table class="gantt" id="ganttTable"></table>
+        <table class="gantt" id="ganttTable"><tbody><tr><td style="padding:30px;text-align:center;color:#00d4ff;font-size:0.9em;">⏳ Cargando avances desde la nube...</td></tr></tbody></table>
     </div>
 
     <h2>🏁 Entrega de Hitos</h2>
@@ -253,6 +253,7 @@
     };
 
     let db = null;
+    let firstLoadDone = false;
     const DB_PATH = 'avances';
 
     function setSyncStatus(text, color) {
@@ -277,14 +278,25 @@
                         t.progress = (data[t.id] !== undefined && data[t.id] !== null) ? data[t.id] : 0;
                     }
                 });
+                firstLoadDone = true;
                 refreshAll();
                 setSyncStatus('🟢 Sincronizado en la nube (en vivo)', '#4CAF50');
             }, (err) => {
                 console.error('Firebase read error:', err);
                 setSyncStatus('🔴 Error de conexión - usando datos locales', '#ff5252');
                 loadLocalFallback();
+                firstLoadDone = true;
                 refreshAll();
             });
+
+            // Si Firebase tarda demasiado (>4s), muestra respaldo local para no dejar la pantalla vacía
+            setTimeout(() => {
+                if (!firstLoadDone) {
+                    loadLocalFallback();
+                    refreshAll();
+                    setSyncStatus('🟡 Cargando desde respaldo local...', '#FF9800');
+                }
+            }, 4000);
 
             // Detectar estado de conexión
             firebase.database().ref('.info/connected').on('value', (snap) => {
@@ -759,18 +771,17 @@
         `).join('');
     }
 
+    // Secciones estáticas se renderizan de inmediato
     loadProgress();
     renderHitos();
     renderCriticalPath();
     renderSwimlane();
     renderDependencies();
     renderSemaforo();
-    renderGantt();
-    renderSummary();
-    renderProjectProgress();
     renderCharts();
 
-    // Conectar a Firebase para sincronización en vivo entre todos los usuarios
+    // El Gantt, resumen y consolidado esperan a que lleguen los avances de la nube
+    // para evitar el parpadeo de "vencidas" con datos en 0%.
     initFirebase();
 
     // Ruta Crítica
